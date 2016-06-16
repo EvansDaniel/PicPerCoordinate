@@ -23,14 +23,35 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.ImageFormat;
+import android.graphics.SurfaceTexture;
+import android.hardware.camera2.CameraAccessException;
+import android.hardware.camera2.CameraCaptureSession;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraDevice;
+import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CameraMetadata;
+import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.TotalCaptureResult;
+import android.hardware.camera2.params.StreamConfigurationMap;
 import android.location.Location;
+import android.media.Image;
+import android.media.ImageReader;
 import android.os.Bundle;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.app.FragmentActivity;
 import android.util.Log;
+import android.util.Size;
+import android.util.SparseIntArray;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.Surface;
+import android.view.TextureView;
 import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
@@ -51,11 +72,16 @@ import com.google.android.gms.maps.model.Polyline;
 import com.google.android.gms.maps.model.PolylineOptions;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 public class MainActivity extends FragmentActivity
@@ -71,14 +97,33 @@ public class MainActivity extends FragmentActivity
     // myLocation variable and the user's newest location before
     // the application takes a picture
     private static final double LOCDIFFERENCE = .0000010;
-    private static final String TAG="MainActivity";
     private static final int color = Color.rgb(88,44,131);
+    private static final String TAG = "AndroidCameraApi";
+    private static final SparseIntArray ORIENTATIONS = new SparseIntArray();
+    private static final int REQUEST_CAMERA_PERMISSION = 200;
+
+    static {
+        ORIENTATIONS.append(Surface.ROTATION_0, 90);
+        ORIENTATIONS.append(Surface.ROTATION_90, 0);
+        ORIENTATIONS.append(Surface.ROTATION_180, 270);
+        ORIENTATIONS.append(Surface.ROTATION_270, 180);
+    }
+
+    protected CameraDevice cameraDevice;
+    protected CameraCaptureSession cameraCaptureSessions;
+    protected CaptureRequest captureRequest;
+    protected CaptureRequest.Builder captureRequestBuilder;
     private TextView mLatitudeTextView;
     private TextView mLongitudeTextView;
+    private TextView mLocDiff;
     private GoogleMap mMap;
     private List<LatLng> coords;
     private long picId = 0;
     private List<String> picIds;
+    /*------------------------------------
+    *
+    * ---------------------------------*/
+    private long time;
     private Polyline line;
     private LatLng myLocation;
     private boolean mapIsReady = false;
@@ -86,6 +131,69 @@ public class MainActivity extends FragmentActivity
     private GoogleApiClient mGoogleApiClient;
     private String fileName = "Hiking_Trails";
     private boolean tracking = true;
+    private Button takePictureButton;
+    private TextureView textureView;
+    private String cameraId;
+    private Size imageDimension;
+    TextureView.SurfaceTextureListener textureListener = new TextureView.SurfaceTextureListener() {
+        @Override
+        public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
+            //open your camera here
+            openCamera();
+        }
+        @Override
+        public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+            // Transform you image captured size according to the surface width and height
+        }
+        @Override
+        public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+            return false;
+        }
+        @Override
+        public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+        }
+    };
+    private ImageReader imageReader;
+    private File file;
+    private int count =0;
+    private boolean mFlashSupported;
+    private Handler mBackgroundHandler;
+
+    /*-----------------------------
+    * ------------------------------*/
+    /**
+     *A callback objects for receiving updates about the state of a camera device.
+     * its instance is used while opening the camera
+     * when it is open it calls the Camera preview
+     **/
+
+    private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() {
+        @Override
+        public void onOpened(CameraDevice camera) {
+            //This is called when the camera is open
+            Log.e(TAG, "onOpened");
+            cameraDevice = camera;
+            createCameraPreview();
+        }
+        @Override
+        public void onDisconnected(CameraDevice camera) {
+            cameraDevice.close();
+        }
+        @Override
+        public void onError(CameraDevice camera, int error) {
+            cameraDevice.close();
+            cameraDevice = null;
+        }
+    };
+    final CameraCaptureSession.CaptureCallback captureCallbackListener = new CameraCaptureSession.CaptureCallback() {
+        @Override
+        public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
+            super.onCaptureCompleted(session, request, result);
+            Toast.makeText(MainActivity.this, "Saved:" + file, Toast.LENGTH_SHORT).show();
+            createCameraPreview();
+        }
+    };
+    private HandlerThread mBackgroundThread;
 
     private String makeFileText(List<LatLng> coords, List<String> picId) {
         String fileText = "";
@@ -179,7 +287,6 @@ public class MainActivity extends FragmentActivity
         tracking = !tracking;
     }
 
-
     /**
      * initializes map fragment, textviews, location service client, and the
      * picture and coordinates data containers
@@ -201,6 +308,21 @@ public class MainActivity extends FragmentActivity
         // initializes everything else
         initTextviewsContainersClient();
 
+
+        //---------
+        textureView = (TextureView) findViewById(R.id.texture);
+        assert textureView != null;
+        textureView.setSurfaceTextureListener(textureListener);
+        takePictureButton = (Button) findViewById(R.id.btn_takepicture);
+        assert takePictureButton != null;
+        takePictureButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // TODO: put with the location changed
+                takePicture();
+            }
+        });
+
     }
 
     private void initTextviewsContainersClient() {
@@ -209,6 +331,7 @@ public class MainActivity extends FragmentActivity
 
         mLatitudeTextView = (TextView) findViewById((R.id.latitude_textview));
         mLongitudeTextView = (TextView) findViewById((R.id.longitude_textview));
+        mLocDiff = (TextView) findViewById((R.id.loc_diff));
 
         mGoogleApiClient = new GoogleApiClient.Builder(this)
                 .addConnectionCallbacks(this)
@@ -216,7 +339,6 @@ public class MainActivity extends FragmentActivity
                 .addApi(LocationServices.API)
                 .build();
     }
-
 
     /**
      * initializes the map and indicates when it is ready, so
@@ -285,11 +407,19 @@ public class MainActivity extends FragmentActivity
         return super.onOptionsItemSelected(item);
     }
 
+    // TODO: find a suitable difference between locations
+
     @Override
     protected void onStart() {
         super.onStart();
         mGoogleApiClient.connect();
     }
+
+    /*
+     * we can use these to methods to say
+     * if(subtractLocations == 'OUR DEFINED DIFFERENCE')
+     *      TAKE A PICTURE
+     */
 
     /**
      * creates the location request object to begin gathering location data
@@ -301,8 +431,8 @@ public class MainActivity extends FragmentActivity
     public void onConnected(@Nullable Bundle bundle) {
         LocationRequest mLocationRequest = LocationRequest.create();
         mLocationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
-        mLocationRequest.setInterval(0);
-        mLocationRequest.setFastestInterval(0);
+        mLocationRequest.setInterval(2000);
+        mLocationRequest.setFastestInterval(1000);
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             // TODO: Consider calling
             //    ActivityCompat#requestPermissions
@@ -328,40 +458,28 @@ public class MainActivity extends FragmentActivity
      * the straight line difference between them
      */
     private double subtractLocations(LatLng oldLoc, Location newLoc) {
+
+        double earthRadius_m = 6371000;
         /**
          *  Lat = Y ; Long = X
          */
         // myLocation stores the most recent previous location of the user
-        double xDiff = Math.abs(newLoc.getLongitude() - oldLoc.longitude);
-        double yDiff = Math.abs(newLoc.getLatitude() - oldLoc.latitude);
+        double dlon = newLoc.getLongitude() - oldLoc.longitude;
+        double dlat = newLoc.getLatitude() - oldLoc.latitude;
 
-        return pythThrm(xDiff,yDiff);
+        dlon = Math.toRadians(dlon);
+        dlat = Math.toRadians(dlat);
+
+        double a = Math.pow(Math.sin(dlat),2) +
+                Math.pow(Math.cos( newLoc.getLongitude()),2)* Math.pow(Math.sin(dlon),2);
+
+        double b = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+
+        System.out.println(earthRadius_m * b);
+
+        return earthRadius_m *b;
     }
 
-    /**
-     * overload in case we need to use two locations instead of a LatLng and Location
-     * @param oldLoc the most recent location that the user was previously at
-     * @param newLoc the current location of the user
-     * @return the difference between oldLoc and newLoc as a straight line difference
-     * Note that the return value is still in terms of coordinate degrees
-     */
-    private double subtractLocations(Location oldLoc, Location newLoc) {
-        /**
-         * Lat = Y ; Long = X
-         */
-        // myLocation stores the most recent previous location of the user
-        double xDiff = Math.abs(newLoc.getLongitude() - oldLoc.getLongitude());
-        double yDiff = Math.abs(newLoc.getLatitude() - oldLoc.getLatitude());
-
-
-        return pythThrm(xDiff,yDiff);
-    }
-
-    /*
-     * we can use these to methods to say
-     * if(subtractLocations == 'OUR DEFINED DIFFERENCE')
-     *      TAKE A PICTURE
-     */
     /**
      * @param x the x part of the triangle
      * @param y the y part of the triangle
@@ -379,8 +497,8 @@ public class MainActivity extends FragmentActivity
 
     // helper methods for updating the text views with the most recent coordinates
     private void changeTextViews(Location loc) {
-            mLatitudeTextView.setText(String.valueOf(loc.getLatitude()));
-            mLongitudeTextView.setText(String.valueOf(loc.getLongitude()));
+         /*   mLatitudeTextView.setText(String.valueOf(loc.getLatitude()));
+            mLongitudeTextView.setText(String.valueOf(loc.getLongitude()));*/
     }
 
     /**
@@ -394,9 +512,12 @@ public class MainActivity extends FragmentActivity
     // TODO: take a picture and save it to the galleries with the respective picId as its name
     @Override
     public void onLocationChanged(Location location) {
+
+
         // if user's location has changed
-        if(mapIsReady)
+        if(mapIsReady && tracking)
         {
+            Log.i(TAG, "onLocationChanged: tracking ========  " + tracking);
             changeTextViews(location);
             // remove the marker
             if(mark != null) mark.remove();
@@ -416,6 +537,8 @@ public class MainActivity extends FragmentActivity
             setPolylinePoints(location);
         }
     }
+    /*------------------
+    * -------------*/
 
     /*
     helper method to update the trace of the polyline
@@ -435,17 +558,247 @@ public class MainActivity extends FragmentActivity
         // these are the coords and picIds that will be saved to the file
         saveCoordsAndPicIds(latLng);
     }
+
     private void saveCoordsAndPicIds(LatLng latLng) {
         coords.add(latLng);
         picIds.add("picName_" + (++picId));
     }
+
     // toasts the diff between myLocation and location
     private void toastLocationDifference(Location location) {
         if (myLocation != null) {
             Toast.makeText(this, "Difference was " +
-                            subtractLocations(myLocation, location),
+                            subtractLocations(myLocation, location) + " meters",
                     Toast.LENGTH_SHORT).show();
         }
+    }
+
+    protected void startBackgroundThread() {
+        mBackgroundThread = new HandlerThread("Camera Background");
+        mBackgroundThread.start();
+        mBackgroundHandler = new Handler(mBackgroundThread.getLooper());
+    }
+    protected void stopBackgroundThread() {
+        mBackgroundThread.quitSafely();
+        try {
+            mBackgroundThread.join();
+            mBackgroundThread = null;
+            mBackgroundHandler = null;
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
+
+    protected void takePicture() {
+        if(null == cameraDevice) {
+            Log.e(TAG, "cameraDevice is null");
+            return;
+        }
+        CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+        try {
+            CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraDevice.getId());
+            Size[] jpegSizes = null;
+            if (characteristics != null) {
+                jpegSizes = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP).getOutputSizes(ImageFormat.JPEG);
+            }
+            int width = 640;
+            int height = 480;
+            if (jpegSizes != null && 0 < jpegSizes.length) {
+                width = jpegSizes[0].getWidth();
+                height = jpegSizes[0].getHeight();
+            }
+            ImageReader reader = ImageReader.newInstance(width, height, ImageFormat.JPEG, 1);
+            List<Surface> outputSurfaces = new ArrayList<Surface>(2);
+            outputSurfaces.add(reader.getSurface());
+            outputSurfaces.add(new Surface(textureView.getSurfaceTexture()));
+            final CaptureRequest.Builder captureBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            captureBuilder.addTarget(reader.getSurface());
+            captureBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+            // Orientation
+            int rotation = getWindowManager().getDefaultDisplay().getRotation();
+            captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, ORIENTATIONS.get(rotation));
+            final File file = new File(Environment.getExternalStorageDirectory()+"/pic" +count +".jpg");
+            count +=1;
+            ImageReader.OnImageAvailableListener readerListener = new ImageReader.OnImageAvailableListener() {
+                @Override
+                public void onImageAvailable(ImageReader reader) {
+                    Image image = null;
+                    try {
+                        image = reader.acquireLatestImage();
+                        ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+                        byte[] bytes = new byte[buffer.capacity()];
+                        buffer.get(bytes);
+                        save(bytes);
+
+                        //reopening  the camera on the surface i guess
+
+                        textureView.setSurfaceTextureListener(textureListener);
+
+                    } catch (FileNotFoundException e) {
+                        e.printStackTrace();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    } finally {
+                        if (image != null) {
+                            image.close();
+                        }
+                    }
+                }
+                private void save(byte[] bytes) throws IOException {
+                    OutputStream output = null;
+                    try {
+                        output = new FileOutputStream(file);
+                        output.write(bytes);
+                    } finally {
+                        if (null != output) {
+                            output.close();
+                        }
+                    }
+                }
+            };
+            reader.setOnImageAvailableListener(readerListener, mBackgroundHandler);
+            final CameraCaptureSession.CaptureCallback captureListener = new CameraCaptureSession.CaptureCallback() {
+                @Override
+                public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
+                    super.onCaptureCompleted(session, request, result);
+                    Toast.makeText(MainActivity.this, "Saved:" + file, Toast.LENGTH_SHORT).show();
+                    createCameraPreview();
+                }
+            };
+            cameraDevice.createCaptureSession(outputSurfaces, new CameraCaptureSession.StateCallback() {
+                @Override
+                public void onConfigured(CameraCaptureSession session) {
+                    try {
+                        session.capture(captureBuilder.build(), captureListener, mBackgroundHandler);
+                    } catch (CameraAccessException e) {
+                        e.printStackTrace();
+                    }
+                }
+                @Override
+                public void onConfigureFailed(CameraCaptureSession session) {
+                }
+            }, mBackgroundHandler);
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        }
+    }
+    /**
+     * called by the CallBack method
+     * Gets the surfaceTexture
+     * uses the imageDimension instantiate in openCamera
+     * creates a capture requestCapture
+     */
+    protected void createCameraPreview() {
+        try {
+            SurfaceTexture texture = textureView.getSurfaceTexture();
+            assert texture != null;
+            texture.setDefaultBufferSize(imageDimension.getWidth(), imageDimension.getHeight());
+            Surface surface = new Surface(texture);
+            captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            captureRequestBuilder.addTarget(surface);
+            cameraDevice.createCaptureSession(Arrays.asList(surface), new CameraCaptureSession.StateCallback(){
+                @Override
+                public void onConfigured(@NonNull CameraCaptureSession cameraCaptureSession) {
+                    //The camera is already closed
+                    if (null == cameraDevice) {
+                        return;
+                    }
+                    // When the session is ready, we start displaying the preview.
+                    cameraCaptureSessions = cameraCaptureSession;
+                    updatePreview();
+                }
+                @Override
+                public void onConfigureFailed(@NonNull CameraCaptureSession cameraCaptureSession) {
+                    Toast.makeText(MainActivity.this, "Configuration change", Toast.LENGTH_SHORT).show();
+                }
+            }, null);
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Called by the surfaceTextureListener once it is ready
+     * manager is the Camera services
+     *getCameraIdList returns the list of all connected camera
+     *getCameraCharacteristics queries all the capabilities of the camera
+     * -------
+     *StreamConfigurationMap Immutable class to store the available stream configurations to set up
+     *Surfaces for creating a capture session with createCaptureSession(List, CameraCaptureSession.StateCallback, Handler).
+     * more @https://developer.android.com/reference/android/hardware/camera2/params/StreamConfigurationMap.html
+     * it has all the list of all possible output formats
+     * ------
+     *in the end if opens the camera with the id and the StateCallBack
+     **/
+    private void openCamera() {
+        CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+        Log.e(TAG, "is camera open");
+        try {
+            cameraId = manager.getCameraIdList()[0];
+            CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
+            StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            assert map != null;
+            imageDimension = map.getOutputSizes(SurfaceTexture.class)[0];
+            // Add permission for camera and let user grant the permission
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.CAMERA, Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_CAMERA_PERMISSION);
+                return;
+            }
+            manager.openCamera(cameraId, stateCallback, null);
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        }
+        Log.e(TAG, "openCamera X");
+    }
+    protected void updatePreview() {
+        if(null == cameraDevice) {
+            Log.e(TAG, "updatePreview error, return");
+        }
+        captureRequestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+        try {
+            cameraCaptureSessions.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        }
+    }
+    private void closeCamera() {
+        if (null != cameraDevice) {
+            cameraDevice.close();
+            cameraDevice = null;
+        }
+        if (null != imageReader) {
+            imageReader.close();
+            imageReader = null;
+        }
+    }
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        if (requestCode == REQUEST_CAMERA_PERMISSION) {
+            if (grantResults[0] == PackageManager.PERMISSION_DENIED) {
+                // close the app
+                Toast.makeText(MainActivity.this, "Sorry!!!, you can't use this app without granting permission", Toast.LENGTH_LONG).show();
+                finish();
+            }
+        }
+    }
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Log.e(TAG, "onResume");
+        startBackgroundThread();
+        if (textureView.isAvailable()) {
+            openCamera();
+        } else {
+            textureView.setSurfaceTextureListener(textureListener);
+        }
+    }
+    @Override
+    protected void onPause() {
+        Log.e(TAG, "onPause");
+        closeCamera();
+        stopBackgroundThread();
+        super.onPause();
     }
 }
 
