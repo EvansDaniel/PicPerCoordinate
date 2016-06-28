@@ -19,6 +19,7 @@
 package dannyblezzoh.picpercoordinate;
 
 import android.Manifest;
+import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -44,7 +45,6 @@ import android.os.HandlerThread;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.v4.app.ActivityCompat;
-import android.support.v4.app.FragmentActivity;
 import android.util.Log;
 import android.util.Size;
 import android.util.SparseIntArray;
@@ -61,15 +61,10 @@ import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationServices;
-import com.google.android.gms.maps.CameraUpdateFactory;
 import com.google.android.gms.maps.GoogleMap;
-import com.google.android.gms.maps.OnMapReadyCallback;
-import com.google.android.gms.maps.SupportMapFragment;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.Marker;
-import com.google.android.gms.maps.model.MarkerOptions;
 import com.google.android.gms.maps.model.Polyline;
-import com.google.android.gms.maps.model.PolylineOptions;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -84,9 +79,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-public class MainActivity extends FragmentActivity
+public class MainActivity extends Activity/*extends FragmentActivity*/
         implements
-        OnMapReadyCallback,
+        /*OnMapReadyCallback,*/
         GoogleApiClient.ConnectionCallbacks,
         GoogleApiClient.OnConnectionFailedListener,
         com.google.android.gms.location.LocationListener
@@ -96,7 +91,8 @@ public class MainActivity extends FragmentActivity
     // LOCDIFFERENCE will be the necessary difference between the
     // myLocation variable and the user's newest location before
     // the application takes a picture
-    private static final double LOCDIFFERENCE = .0000010;
+    // LOCDIFFERENCE IS IN METERS
+    private static final double LOCDIFFERENCE = 10;
     private static final int color = Color.rgb(88,44,131);
     private static final String TAG = "AndroidCameraApi";
     private static final SparseIntArray ORIENTATIONS = new SparseIntArray();
@@ -298,9 +294,9 @@ public class MainActivity extends FragmentActivity
         setContentView(R.layout.activity_main);
 
         // Obtain the SupportMapFragment and get notified when the map is ready to be used.
-        SupportMapFragment mapFragment = (SupportMapFragment) getSupportFragmentManager()
-                .findFragmentById(R.id.map);
-        mapFragment.getMapAsync(this);
+   /*     SupportMapFragment mapFragment = (SupportMapFragment) getSupportFragmentManager()
+                .findFragmentById(R.id.map);*/
+//        mapFragment.getMapAsync(this);
 
         // ideally will lock the orientation
         this.setRequestedOrientation(getRequestedOrientation());
@@ -346,7 +342,7 @@ public class MainActivity extends FragmentActivity
      * with that data
      * @param googleMap reference to the map loaded on screen
      */
-    @Override
+    /*@Override
     public void onMapReady(GoogleMap googleMap) {
         mMap = googleMap;
 
@@ -355,13 +351,11 @@ public class MainActivity extends FragmentActivity
         mMap.getUiSettings().setCompassEnabled(true);
 
         mapIsReady = true;
-    }
+    }*/
 
     /**
      *
      * checks if the device can access google play services, connects to it if so
-     * @param requestCode
-     * @param resultCode
      * @param data
      */
     @Override
@@ -480,25 +474,10 @@ public class MainActivity extends FragmentActivity
         return earthRadius_m *b;
     }
 
-    /**
-     * @param x the x part of the triangle
-     * @param y the y part of the triangle
-     * @return the length of the hypotenuse of the triangle
-     */
-    private double pythThrm(double x, double y) {
-        double hyp;
-
-        //  hyp^2 = x^2 + y^2
-
-        hyp = Math.sqrt((Math.pow(x,2)) + (Math.pow(y,2)));
-
-        return hyp;
-    }
-
     // helper methods for updating the text views with the most recent coordinates
     private void changeTextViews(Location loc) {
-         /*   mLatitudeTextView.setText(String.valueOf(loc.getLatitude()));
-            mLongitudeTextView.setText(String.valueOf(loc.getLongitude()));*/
+            mLatitudeTextView.setText(String.valueOf(loc.getLatitude()));
+            mLongitudeTextView.setText(String.valueOf(loc.getLongitude()));
     }
 
     /**
@@ -515,12 +494,12 @@ public class MainActivity extends FragmentActivity
 
 
         // if user's location has changed
-        if(mapIsReady && tracking)
+        if(/*mapIsReady && */tracking)
         {
             Log.i(TAG, "onLocationChanged: tracking ========  " + tracking);
             changeTextViews(location);
             // remove the marker
-            if(mark != null) mark.remove();
+//            if(mark != null) mark.remove();
 
             toastLocationDifference(location);
 
@@ -528,11 +507,11 @@ public class MainActivity extends FragmentActivity
             Log.i(TAG, "onLocationChanged: " + myLocation);
 
 
-            mark = mMap.addMarker(new MarkerOptions()
-                    .title("Start").position(myLocation).visible(true));
+            /*mark = mMap.addMarker(new MarkerOptions()
+                    .title("Start").position(myLocation).visible(true));*/
 
-            mMap.moveCamera(CameraUpdateFactory.newLatLng(myLocation));
-            mMap.moveCamera(CameraUpdateFactory.zoomTo(19));
+            /*mMap.moveCamera(CameraUpdateFactory.newLatLng(myLocation));
+            mMap.moveCamera(CameraUpdateFactory.zoomTo(19));*/
 
             setPolylinePoints(location);
         }
@@ -546,15 +525,15 @@ public class MainActivity extends FragmentActivity
      */
     private void setPolylinePoints(Location location) {
         // if this is the first time we are building the line
-        if(line == null)
+        /*if(line == null)
             line = mMap.addPolyline(new PolylineOptions()
                     .add(myLocation)
                     .width(2)
-                    .color(color));
-        List<LatLng> points = line.getPoints();
+                    .color(color));*/
+//        List<LatLng> points = line.getPoints();
         LatLng latLng = new LatLng(location.getLatitude(), location.getLongitude());
-        points.add(latLng);
-        line.setPoints(points);
+//        points.add(latLng);
+//        line.setPoints(points);
         // these are the coords and picIds that will be saved to the file
         saveCoordsAndPicIds(latLng);
     }
